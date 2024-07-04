@@ -68,10 +68,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     // Constants for filtering and movement detection
     private val alpha = 0.9f // for low-pass filter
-    private val movementThreshold = 0.5f // Threshold to detect movement
-    private val updateInterval = 1000 // Update interval in milliseconds
-    private val friction = 0.85f // Friction factor to gradually reduce velocity
-    private val deadZone = 1.0f // Dead zone to ignore small movements
+    private val movementThreshold = 0.1f // Threshold to detect movement
+    private val updateInterval = 500 // Update interval in milliseconds
+    private val friction = 0.9f // Friction factor to gradually reduce velocity
+    private val deadZone = 0.2f // Dead zone to ignore small movements
+
 
 
     // MutableState to hold the route
@@ -140,17 +141,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
-                // Apply high-pass filter to accelerometer data to remove gravity
+                // Apply high-pass filter to accelerometer data to remove gravity, but ignore z-axis
                 accelValues[0] = alpha * accelValues[0] + (1 - alpha) * event.values[0]
                 accelValues[1] = alpha * accelValues[1] + (1 - alpha) * event.values[1]
-                accelValues[2] = alpha * accelValues[2] + (1 - alpha) * (event.values[2] - 9.81f)
-                Log.d("SensorChanged", "Filtered Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})")
+                Log.d("SensorChanged", "Filtered Accelerometer: (${accelValues[0]}, ${accelValues[1]})")
             }
             Sensor.TYPE_GYROSCOPE -> {
                 gyroValues[0] = event.values[0]
                 gyroValues[1] = event.values[1]
-                gyroValues[2] = event.values[2]
-                Log.d("SensorChanged", "Gyroscope: (${gyroValues[0]}, ${gyroValues[1]}, ${gyroValues[2]})")
+                Log.d("SensorChanged", "Gyroscope: (${gyroValues[0]}, ${gyroValues[1]})")
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 magnetValues[0] = event.values[0]
@@ -160,8 +159,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
 
-        // Calculate the magnitude of the accelerometer vector
-        val accelMagnitude = sqrt(accelValues[0] * accelValues[0] + accelValues[1] * accelValues[1] + accelValues[2] * accelValues[2])
+        // Calculate the magnitude of the accelerometer vector for x and y only
+        val accelMagnitude = sqrt(accelValues[0] * accelValues[0] + accelValues[1] * accelValues[1])
         Log.d("SensorChanged", "Accelerometer Magnitude: $accelMagnitude")
 
         // Ignore small movements by applying a dead zone
@@ -181,7 +180,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         velocityY *= friction
 
         // Apply a stop threshold to velocities
-        val stopThreshold = 0.1f
+        val stopThreshold = 0.09f
         if (velocityX.absoluteValue < stopThreshold) velocityX = 0f
         if (velocityY.absoluteValue < stopThreshold) velocityY = 0f
 
