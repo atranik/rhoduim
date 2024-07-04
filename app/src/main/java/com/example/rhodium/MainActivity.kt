@@ -67,11 +67,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var magnetValues = floatArrayOf(0f, 0f, 0f)
 
     // Constants for filtering and movement detection
-    private val alpha = 0.8f // for low-pass filter
-    private val movementThreshold = 20f // Increased threshold to reduce sensitivity
+    private val alpha = 0.9f // for low-pass filter
+    private val movementThreshold = 0.5f // Threshold to detect movement
     private val updateInterval = 1000 // Update interval in milliseconds
-    private val friction = 0.9f // Friction factor to gradually reduce velocity
+    private val friction = 0.85f // Friction factor to gradually reduce velocity
     private val deadZone = 1.0f // Dead zone to ignore small movements
+
 
     // MutableState to hold the route
     private val routeState = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
@@ -140,10 +141,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 // Apply high-pass filter to accelerometer data to remove gravity
-                val gravity = 9.81f // approximate value of gravity
-                accelValues[0] = alpha * accelValues[0] + (1 - alpha) * (event.values[0])
-                accelValues[1] = alpha * accelValues[1] + (1 - alpha) * (event.values[1])
-                accelValues[2] = alpha * accelValues[2] + (1 - alpha) * (event.values[2] - gravity)
+                accelValues[0] = alpha * accelValues[0] + (1 - alpha) * event.values[0]
+                accelValues[1] = alpha * accelValues[1] + (1 - alpha) * event.values[1]
+                accelValues[2] = alpha * accelValues[2] + (1 - alpha) * (event.values[2] - 9.81f)
                 Log.d("SensorChanged", "Filtered Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})")
             }
             Sensor.TYPE_GYROSCOPE -> {
@@ -173,12 +173,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // Update velocities
             velocityX += accelValues[0] * deltaTime
             velocityY += accelValues[1] * deltaTime
-
-            // Apply friction to velocities
-            velocityX *= friction
-            velocityY *= friction
             Log.d("SensorChanged", "Updated Velocities: ($velocityX, $velocityY)")
         }
+
+        // Apply friction to velocities
+        velocityX *= friction
+        velocityY *= friction
+
+        // Apply a stop threshold to velocities
+        val stopThreshold = 0.1f
+        if (velocityX.absoluteValue < stopThreshold) velocityX = 0f
+        if (velocityY.absoluteValue < stopThreshold) velocityY = 0f
+
+        Log.d("SensorChanged", "Velocities after Stop Threshold: ($velocityX, $velocityY)")
 
         // Update the current location based on the velocities if movement exceeds the threshold
         currentLocation?.let { (x, y) ->
