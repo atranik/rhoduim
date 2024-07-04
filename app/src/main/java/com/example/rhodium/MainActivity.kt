@@ -5,8 +5,14 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,13 +24,15 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -32,38 +40,38 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.room.Room
 import com.example.rhodium.ui.theme.RhodiumTheme
-import kotlinx.coroutines.launch
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
-import android.net.Uri
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.activity.compose.BackHandler
-
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.compose.foundation.Canvas
-
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
-
-
+import kotlin.math.absoluteValue
+import kotlin.math.atan2
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
+    private var magnetometer: Sensor? = null
 
     private lateinit var database: AppDatabase
 
     private var initialLocation: Pair<Float, Float>? = null
     private var currentLocation: Pair<Float, Float>? = null
-    private var previousTime: Long = 0
+    private var previousTime: Long = System.currentTimeMillis()
     private var velocityX = 0f
     private var velocityY = 0f
-    private val route = mutableListOf<Pair<Float, Float>>()
+    private var accelValues = floatArrayOf(0f, 0f, 0f)
+    private var gyroValues = floatArrayOf(0f, 0f, 0f)
+    private var magnetValues = floatArrayOf(0f, 0f, 0f)
+
+    // Constants for filtering and movement detection
+    private val alpha = 0.8f // for low-pass filter
+    private val movementThreshold = 10f // Increased threshold to reduce sensitivity
+    private val updateInterval = 1000 // Update interval in milliseconds
+    private val friction = 0.9f // Friction factor to gradually reduce velocity
+
+    // MutableState to hold the route
+    private val routeState = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,6 +84,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
 
         database = Room.databaseBuilder(
             applicationContext,
@@ -102,6 +111,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         gyroscope?.also { gyro ->
             sensorManager.registerListener(this, gyro, SensorManager.SENSOR_DELAY_NORMAL)
         }
+        magnetometer?.also { mag ->
+            sensorManager.registerListener(this, mag, SensorManager.SENSOR_DELAY_NORMAL)
+        }
     }
 
     override fun onPause() {
@@ -114,27 +126,65 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         val currentTime = System.currentTimeMillis()
         val deltaTime = (currentTime - previousTime) / 1000f // in seconds
-        previousTime = currentTime
 
-        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-            // Use accelerometer data to update velocities
-            val accelerationX = event.values[0]
-            val accelerationY = event.values[1]
-
-            velocityX += accelerationX * deltaTime
-            velocityY += accelerationY * deltaTime
+        if (deltaTime < updateInterval / 1000f) {
+            // Debounce updates to avoid too frequent updates
+            return
         }
 
-        // Update the current location based on the velocities
+        previousTime = currentTime
+
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                // Apply low-pass filter to accelerometer data
+                accelValues[0] = alpha * accelValues[0] + (1 - alpha) * event.values[0]
+                accelValues[1] = alpha * accelValues[1] + (1 - alpha) * event.values[1]
+                accelValues[2] = alpha * accelValues[2] + (1 - alpha) * event.values[2]
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                gyroValues[0] = event.values[0]
+                gyroValues[1] = event.values[1]
+                gyroValues[2] = event.values[2]
+            }
+            Sensor.TYPE_MAGNETIC_FIELD -> {
+                magnetValues[0] = event.values[0]
+                magnetValues[1] = event.values[1]
+                magnetValues[2] = event.values[2]
+            }
+        }
+
+        // Apply friction to velocities
+        velocityX *= friction
+        velocityY *= friction
+
+        // Update velocities
+        velocityX += accelValues[0] * deltaTime
+        velocityY += accelValues[1] * deltaTime
+
+        // Update the current location based on the velocities if movement exceeds the threshold
         currentLocation?.let { (x, y) ->
-            val newX = x + velocityX * deltaTime
-            val newY = y + velocityY * deltaTime
-            currentLocation = Pair(newX, newY)
-            route.add(Pair(newX, newY))
+            val deltaX = velocityX * deltaTime
+            val deltaY = velocityY * deltaTime
+
+            if (deltaX.absoluteValue > movementThreshold || deltaY.absoluteValue > movementThreshold) {
+                val newX = x + deltaX
+                val newY = y + deltaY
+                currentLocation = Pair(newX, newY)
+                // Update the route state to add the new location
+                updateRoute(Pair(newX, newY))
+                Log.d("SensorChanged", "New Location: ($newX, $newY)")
+            }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    // Helper function to update the route state
+    private fun updateRoute(newLocation: Pair<Float, Float>) {
+        val routeList = routeState.value.toMutableList()
+        routeList.add(newLocation)
+        routeState.value = routeList
+    }
 
     @SuppressLint("ProduceStateDoesNotAssignValue")
     @Composable
@@ -228,8 +278,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 userLocation = Pair(tapOffset.x, tapOffset.y)
                                 initialLocation = Pair(tapOffset.x, tapOffset.y)
                                 currentLocation = Pair(tapOffset.x, tapOffset.y)
-                                route.clear()
-                                route.add(Pair(tapOffset.x, tapOffset.y))
+                                routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
+                                Log.d("MapScreen", "Initial Location: ($tapOffset.x, $tapOffset.y)")
                             }
                         }
                 ) {
@@ -239,7 +289,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    DrawRoute(route)
+                    DrawRoute(routeState.value)
 
                     userLocation?.let { (x, y) ->
                         Box(
@@ -271,6 +321,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                 withContext(Dispatchers.IO) {
                                     val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
                                     mapBitmap = BitmapFactory.decodeStream(inputStream)
+                                    routeState.value = emptyList() // Clear the route when a new map is selected
                                 }
                             }
                         }
@@ -300,10 +351,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     center = Offset(x, y),
                     style = Stroke(width = 2f)
                 )
+                Log.d("DrawRoute", "Drawing circle at: ($x, $y)")
             }
         }
     }
-
 
     @Composable
     fun MapListItem(map: MapEntity, onClick: () -> Unit) {
