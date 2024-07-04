@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,7 +22,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
@@ -36,8 +41,15 @@ import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.activity.compose.BackHandler
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.Canvas
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+
+
 
 class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
@@ -46,13 +58,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private lateinit var database: AppDatabase
 
+    private var initialLocation: Pair<Float, Float>? = null
+    private var currentLocation: Pair<Float, Float>? = null
+    private var previousTime: Long = 0
+    private var velocityX = 0f
+    private var velocityY = 0f
+    private val route = mutableListOf<Pair<Float, Float>>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-//        ActivityCompat.requestPermissions(
-//            this,
-//            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
-//            1
-//        )
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+            1
+        )
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -91,8 +110,28 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        // Handle sensor data to track user movement
-        // TODO: Implement sensor data handling to update user location on the map
+        if (event == null || initialLocation == null) return
+
+        val currentTime = System.currentTimeMillis()
+        val deltaTime = (currentTime - previousTime) / 1000f // in seconds
+        previousTime = currentTime
+
+        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
+            // Use accelerometer data to update velocities
+            val accelerationX = event.values[0]
+            val accelerationY = event.values[1]
+
+            velocityX += accelerationX * deltaTime
+            velocityY += accelerationY * deltaTime
+        }
+
+        // Update the current location based on the velocities
+        currentLocation?.let { (x, y) ->
+            val newX = x + velocityX * deltaTime
+            val newY = y + velocityY * deltaTime
+            currentLocation = Pair(newX, newY)
+            route.add(Pair(newX, newY))
+        }
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -182,24 +221,40 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
 
                 Box(
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures { tapOffset ->
+                                userLocation = Pair(tapOffset.x, tapOffset.y)
+                                initialLocation = Pair(tapOffset.x, tapOffset.y)
+                                currentLocation = Pair(tapOffset.x, tapOffset.y)
+                                route.clear()
+                                route.add(Pair(tapOffset.x, tapOffset.y))
+                            }
+                        }
                 ) {
                     Image(
                         bitmap = mapBitmap!!.asImageBitmap(),
                         contentDescription = "Map",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                // Handle user clicking on the map to set initial location
-                                // TODO: Implement location setting logic
-                            }
+                        modifier = Modifier.fillMaxSize()
                     )
+
+                    DrawRoute(route)
+
                     userLocation?.let { (x, y) ->
                         Box(
                             modifier = Modifier
                                 .offset(x.dp, y.dp)
                                 .size(10.dp)
-                                .background(MaterialTheme.colorScheme.primary)
+                                .background(Color.Green) // Initial location pin
+                        )
+                    }
+                    currentLocation?.let { (x, y) ->
+                        Box(
+                            modifier = Modifier
+                                .offset(x.dp, y.dp)
+                                .size(10.dp)
+                                .background(Color.Red) // Current location pin
                         )
                     }
                 }
@@ -234,6 +289,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
     }
+
+    @Composable
+    fun DrawRoute(route: List<Pair<Float, Float>>) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            route.forEach { (x, y) ->
+                drawCircle(
+                    color = Color.Red,
+                    radius = 5f,
+                    center = Offset(x, y),
+                    style = Stroke(width = 2f)
+                )
+            }
+        }
+    }
+
 
     @Composable
     fun MapListItem(map: MapEntity, onClick: () -> Unit) {
