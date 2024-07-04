@@ -35,6 +35,7 @@ import android.hardware.SensorManager
 import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -47,11 +48,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-//        ActivityCompat.requestPermissions(
-//            this,
-//            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
-//            1
-//        )
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+            1
+        )
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -142,6 +143,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             verticalArrangement = Arrangement.Center
         ) {
             if (mapBitmap != null) {
+                BackHandler {
+                    mapBitmap = null
+                }
+
                 Box(
                     modifier = Modifier.fillMaxSize()
                 ) {
