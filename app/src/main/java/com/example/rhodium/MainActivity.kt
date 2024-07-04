@@ -48,11 +48,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
-            1
-        )
+//        ActivityCompat.requestPermissions(
+//            this,
+//            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+//            1
+//        )
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -114,25 +114,59 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
 
         var selectedMap by remember { mutableStateOf<String?>(null) }
+        var showDialog by remember { mutableStateOf(false) }
+        var newMapUri by remember { mutableStateOf<Uri?>(null) }
+        var newMapName by remember { mutableStateOf("") }
 
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
                 val data: Intent? = result.data
                 val uri = data?.data
                 if (uri != null) {
-                    val inputStream = context.contentResolver.openInputStream(uri)
-                    mapBitmap = BitmapFactory.decodeStream(inputStream)
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            // Save map to the database
-                            database.mapDao().insert(MapEntity(name = uri.toString(), uri = uri.toString()))
-                        }
-                        saveMapUri(uri.toString(), context)
-                        // Update availableMaps to include the newly added map
-                        availableMaps = withContext(Dispatchers.IO) { database.mapDao().getAll() }
-                    }
+                    newMapUri = uri
+                    showDialog = true
                 }
             }
+        }
+
+        if (showDialog) {
+            AlertDialog(
+                onDismissRequest = { showDialog = false },
+                title = { Text(text = "Enter Map Name") },
+                text = {
+                    TextField(
+                        value = newMapName,
+                        onValueChange = { newMapName = it },
+                        label = { Text("Map Name") }
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val uri = newMapUri ?: return@Button
+                            val inputStream = context.contentResolver.openInputStream(uri)
+                            mapBitmap = BitmapFactory.decodeStream(inputStream)
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    // Save map to the database with the user-provided name
+                                    database.mapDao().insert(MapEntity(name = newMapName, uri = uri.toString()))
+                                }
+                                saveMapUri(uri.toString(), context)
+                                // Update availableMaps to include the newly added map
+                                availableMaps = withContext(Dispatchers.IO) { database.mapDao().getAll() }
+                            }
+                            showDialog = false
+                        }
+                    ) {
+                        Text("Save")
+                    }
+                },
+                dismissButton = {
+                    Button(onClick = { showDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
 
         Column(
