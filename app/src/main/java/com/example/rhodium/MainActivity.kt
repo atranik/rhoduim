@@ -257,7 +257,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var newMapUri by remember { mutableStateOf<Uri?>(null) }
         var newMapName by remember { mutableStateOf("") }
         var showGuide by remember { mutableStateOf(false) } // State for showing the guide
-
+        var viewMode by remember { mutableStateOf(false) }
         var showDeleteDialog by remember { mutableStateOf(false) }
         var mapToDelete by remember { mutableStateOf<MapEntity?>(null) }
 
@@ -351,18 +351,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (mapBitmap != null) {
                 BackHandler {
                     mapBitmap = null
+                    viewMode = false
                 }
 
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
-                            detectTapGestures { tapOffset ->
-                                userLocation = Pair(tapOffset.x, tapOffset.y)
-                                initialLocation = Pair(tapOffset.x, tapOffset.y)
-                                currentLocation = Pair(tapOffset.x, tapOffset.y)
-                                routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
-                                Log.d("MapScreen", "Initial Location: ($tapOffset.x, $tapOffset.y)")
+                            if (viewMode != true) {
+                                detectTapGestures { tapOffset ->
+                                    userLocation = Pair(tapOffset.x, tapOffset.y)
+                                    initialLocation = Pair(tapOffset.x, tapOffset.y)
+                                    currentLocation = Pair(tapOffset.x, tapOffset.y)
+                                    routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
+                                    Log.d(
+                                        "MapScreen",
+                                        "Initial Location: ($tapOffset.x, $tapOffset.y)"
+                                    )
+                                }
                             }
                         }
                 ) {
@@ -412,6 +418,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                         routeState.value =
                                             emptyList() // Clear the route when a new map is selected
                                         currentLocation = null
+                                        viewMode = true
                                     }
                                 }
                             },
