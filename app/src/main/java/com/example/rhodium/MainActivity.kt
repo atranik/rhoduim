@@ -47,6 +47,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.absoluteValue
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
+import androidx.compose.ui.platform.LocalDensity
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -55,23 +56,23 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var gyroscope: Sensor? = null
     private var magnetometer: Sensor? = null
 
+    private var rotationMatrix = FloatArray(9)
+    private var orientationAngles = FloatArray(3)
+    private var lastGyroValues = FloatArray(3)
+    private var lastGyroTimestamp = 0L
+    private val gyroBias = FloatArray(3)
+
+
     private lateinit var database: AppDatabase
 
     private var initialLocation: Pair<Float, Float>? = null
     private var currentLocation: Pair<Float, Float>? = null
     private var previousTime: Long = System.currentTimeMillis()
+    private val smoothedAccelValues = floatArrayOf(0f, 0f, 0f)
     private var velocityX = 0f
     private var velocityY = 0f
     private var accelValues = floatArrayOf(0f, 0f, 0f)
-    private var gyroValues = floatArrayOf(0f, 0f, 0f)
-    private var magnetValues = floatArrayOf(0f, 0f, 0f)
-
-    // Constants for filtering and movement detection
-    private val alpha = 0.9f // for low-pass filter
-    private val movementThreshold = 0.1f // Threshold to detect movement
-    private val updateInterval = 500 // Update interval in milliseconds
-    private val friction = 0.9f // Friction factor to gradually reduce velocity
-    private val deadZone = 0.2f // Dead zone to ignore small movements
+    private var showGuide by mutableStateOf(false)
 
 
 
@@ -126,83 +127,66 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
     }
 
+
+    private val walkingThreshold = 0.9f // Threshold to detect walking
+    private val deltaMove = 1.3f // Constant delta value for movement
+    private val horizontalThreshold = 9.9f // Threshold to detect if the phone is horizontal
+
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || initialLocation == null) return
 
-        val currentTime = System.currentTimeMillis()
-        val deltaTime = (currentTime - previousTime) / 1000f // in seconds
-
-        if (deltaTime < updateInterval / 1000f) {
-            // Debounce updates to avoid too frequent updates
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                accelValues = event.values.clone()
+                Log.d("SensorChanged", "Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})")
+            }
+        }
+        // Check if the phone is held horizontally (z-axis should be close to 9.8 or -9.8 for horizontal)
+        if (accelValues[2] < horizontalThreshold && accelValues[2] > -horizontalThreshold) {
+            Log.d("SensorChanged", "Phone is not horizontal. Ignoring movement.")
             return
         }
 
-        previousTime = currentTime
+        // Smooth the accelerometer data using a low-pass filter
+        val alpha = 0.8f
+        smoothedAccelValues[0] = alpha * smoothedAccelValues[0] + (1 - alpha) * accelValues[0]
+        smoothedAccelValues[1] = alpha * smoothedAccelValues[1] + (1 - alpha) * accelValues[1]
 
-        when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> {
-                // Apply high-pass filter to accelerometer data to remove gravity, but ignore z-axis
-                accelValues[0] = alpha * accelValues[0] + (1 - alpha) * event.values[0]
-                accelValues[1] = alpha * accelValues[1] + (1 - alpha) * event.values[1]
-                Log.d("SensorChanged", "Filtered Accelerometer: (${accelValues[0]}, ${accelValues[1]})")
+        // Calculate the magnitude of the smoothed accelerometer vector for x and y only
+        val accelMagnitude = sqrt(smoothedAccelValues[0] * smoothedAccelValues[0] + smoothedAccelValues[1] * smoothedAccelValues[1])
+        Log.d("SensorChanged", "Smoothed Accelerometer Magnitude: $accelMagnitude")
+
+        // Check if the user is walking
+        if (accelMagnitude > walkingThreshold) {
+            // Update velocities based on the direction
+            if (smoothedAccelValues[0].absoluteValue > smoothedAccelValues[1].absoluteValue) {
+                // Moving more in the x direction
+                velocityX = deltaMove * Math.signum(smoothedAccelValues[0])
+                velocityY = 0f
+            } else {
+                // Moving more in the y direction
+                velocityX = 0f
+                velocityY = deltaMove * Math.signum(smoothedAccelValues[1])
             }
-            Sensor.TYPE_GYROSCOPE -> {
-                gyroValues[0] = event.values[0]
-                gyroValues[1] = event.values[1]
-                Log.d("SensorChanged", "Gyroscope: (${gyroValues[0]}, ${gyroValues[1]})")
-            }
-            Sensor.TYPE_MAGNETIC_FIELD -> {
-                magnetValues[0] = event.values[0]
-                magnetValues[1] = event.values[1]
-                magnetValues[2] = event.values[2]
-                Log.d("SensorChanged", "Magnetometer: (${magnetValues[0]}, ${magnetValues[1]}, ${magnetValues[2]})")
-            }
-        }
+            Log.d("SensorChanged", "User is walking. Updated Velocities: ($velocityX, $velocityY)")
 
-        // Calculate the magnitude of the accelerometer vector for x and y only
-        val accelMagnitude = sqrt(accelValues[0] * accelValues[0] + accelValues[1] * accelValues[1])
-        Log.d("SensorChanged", "Accelerometer Magnitude: $accelMagnitude")
-
-        // Ignore small movements by applying a dead zone
-        if (accelMagnitude < deadZone) {
-            velocityX *= friction
-            velocityY *= friction
-            Log.d("SensorChanged", "In Dead Zone, Applying Friction: ($velocityX, $velocityY)")
-        } else {
-            // Update velocities
-            velocityX += accelValues[0] * deltaTime
-            velocityY += accelValues[1] * deltaTime
-            Log.d("SensorChanged", "Updated Velocities: ($velocityX, $velocityY)")
-        }
-
-        // Apply friction to velocities
-        velocityX *= friction
-        velocityY *= friction
-
-        // Apply a stop threshold to velocities
-        val stopThreshold = 0.09f
-        if (velocityX.absoluteValue < stopThreshold) velocityX = 0f
-        if (velocityY.absoluteValue < stopThreshold) velocityY = 0f
-
-        Log.d("SensorChanged", "Velocities after Stop Threshold: ($velocityX, $velocityY)")
-
-        // Update the current location based on the velocities if movement exceeds the threshold
-        currentLocation?.let { (x, y) ->
-            val deltaX = velocityX * deltaTime
-            val deltaY = velocityY * deltaTime
-
-            if (deltaX.absoluteValue > movementThreshold || deltaY.absoluteValue > movementThreshold) {
-                val newX = x + deltaX
-                val newY = y + deltaY
+            // Update the current location based on the velocities
+            currentLocation?.let { (x, y) ->
+                val newX = x + velocityX
+                val newY = y + velocityY
                 currentLocation = Pair(newX, newY)
                 // Update the route state to add the new location
                 updateRoute(Pair(newX, newY))
                 Log.d("SensorChanged", "New Location: ($newX, $newY)")
-            } else {
-                Log.d("SensorChanged", "Movement below threshold: (deltaX: $deltaX, deltaY: $deltaY)")
             }
+        } else {
+            // User is not walking, stop movement
+            velocityX = 0f
+            velocityY = 0f
+            Log.d("SensorChanged", "User is not walking. Velocities set to zero.")
         }
     }
+
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
@@ -318,21 +302,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     DrawRoute(routeState.value)
 
-                    userLocation?.let { (x, y) ->
-                        Box(
-                            modifier = Modifier
-                                .offset(x.dp, y.dp)
-                                .size(10.dp)
-                                .background(Color.Green) // Initial location pin
-                        )
-                    }
+//                    userLocation?.let { (x, y) ->
+//                        Box(
+//                            modifier = Modifier
+//                                .offset(x.dp, y.dp)
+//                                .size(4.dp)
+//                        ) {
+//                            LocationMarker() // Display the location marker
+//                        }
+//                    }
                     currentLocation?.let { (x, y) ->
-                        Box(
-                            modifier = Modifier
-                                .offset(x.dp, y.dp)
-                                .size(10.dp)
-                                .background(Color.Red) // Current location pin
-                        )
+                        LocationMarker(x ,y) // Display the current location marker
+                        Log.d("MapScreen", "Current Location: ($x, $y)")
                     }
                 }
             } else {
@@ -349,8 +330,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
                                     mapBitmap = BitmapFactory.decodeStream(inputStream)
                                     routeState.value = emptyList() // Clear the route when a new map is selected
+                                    currentLocation = null
                                 }
                             }
+                            showGuide = true
                         }
                     }
                 }
@@ -366,6 +349,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
         }
+
+        if (showGuide) {
+            GuideDialog {
+                showGuide = false
+            }
+        }
     }
 
     @Composable
@@ -374,14 +363,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             route.forEach { (x, y) ->
                 drawCircle(
                     color = Color.Red,
-                    radius = 5f,
+                    radius = 7f,
                     center = Offset(x, y),
-                    style = Stroke(width = 2f)
+                    style = androidx.compose.ui.graphics.drawscope.Fill
                 )
                 Log.d("DrawRoute", "Drawing circle at: ($x, $y)")
             }
         }
     }
+
+
 
     @Composable
     fun MapListItem(map: MapEntity, onClick: () -> Unit) {
@@ -393,4 +384,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 .clickable { onClick() }
         )
     }
+}
+
+@Composable
+fun GuideDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Guide") },
+        text = { Text("Hold your phone with the screen facing upward, parallel to the floor.") },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("OK")
+            }
+        }
+    )
 }
