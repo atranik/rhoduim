@@ -3,6 +3,7 @@ package com.example.rhodium
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.hardware.Sensor
@@ -20,7 +21,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -43,13 +43,26 @@ import com.example.rhodium.ui.theme.RhodiumTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.absoluteValue
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Info
-
+import androidx.lifecycle.lifecycleScope
+import com.example.rhodium.database.AppDatabase
+import com.example.rhodium.database.CustomSignalStrength
+import com.example.rhodium.database.MapEntity
+import com.example.rhodium.database.getSignalStrength
+import com.example.rhodium.elements.DeleteConfirmationDialog
+import com.example.rhodium.elements.GuideDialog
+import com.example.rhodium.elements.LocationMarker
+import com.example.rhodium.elements.MapListItem
+import com.example.rhodium.elements.SignalStrengthBox
+import com.example.rhodium.elements.saveMapUri
+import com.example.rhodium.services.RouteColor
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import com.example.rhodium.services.RetrieveAndSaveCellInfo
+import com.example.rhodium.services.getColorByIndex
+import kotlinx.coroutines.flow.collectLatest
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -57,6 +70,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
     private var magnetometer: Sensor? = null
+    private val signalStrengthFlow = MutableStateFlow(0)
 
 
     private lateinit var database: AppDatabase
@@ -67,13 +81,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
 
     // MutableState to hold the route
-    private val routeState = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
+    private val routeState = mutableStateOf<List<Triple<Float, Float, Int>>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.ACCESS_NETWORK_STATE,
+                Manifest.permission.INTERNET,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ),
             1
         )
 
@@ -95,6 +116,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
+            }
+        }
+
+        lifecycleScope.launch {
+            RetrieveAndSaveCellInfo(this@MainActivity, database).collect { signalStrength ->
+                Log.d("MainActivity", "Signal Strength: $signalStrength")
+                signalStrengthFlow.value = signalStrength
             }
         }
     }
@@ -122,6 +150,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var smoothedAccelValues = FloatArray(3)
     private var velocityX = 0f
     private var velocityY = 0f
+    private var previousTime: Long = System.currentTimeMillis()
+    private val updateInterval = 200 // Update interval in milliseconds
+
 
     private val rotationMatrix = FloatArray(9)
     private val orientationAngles = FloatArray(3)
@@ -133,6 +164,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || initialLocation == null) return
+
+        val currentTime = System.currentTimeMillis()
+        val deltaTime = (currentTime - previousTime) / 1000f // in seconds
+
+        if (deltaTime < updateInterval / 1000f) {
+            // Debounce updates to avoid too frequent updates
+            return
+        }
 
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
@@ -179,14 +218,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         smoothedAccelValues[0] = alpha * smoothedAccelValues[0] + (1 - alpha) * accelValues[0]
         smoothedAccelValues[1] = alpha * smoothedAccelValues[1] + (1 - alpha) * accelValues[1]
 
-        // Calculate the magnitude of the smoothed accelerometer vector for x and y only
         val accelMagnitude =
             sqrt(smoothedAccelValues[0] * smoothedAccelValues[0] + smoothedAccelValues[1] * smoothedAccelValues[1])
         Log.d("SensorChanged", "Smoothed Accelerometer Magnitude: $accelMagnitude")
 
-        // Check if the user is walking
         if (accelMagnitude > walkingThreshold) {
-            // Update velocities based on azimuth (direction)
             when (direction) {
                 "East" -> {
                     velocityX = deltaMove
@@ -215,8 +251,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val newX = x + velocityX
                 val newY = y + velocityY
                 currentLocation = Pair(newX, newY)
-                // Update the route state to add the new location
-                updateRoute(Pair(newX, newY))
+                val locationColor = getLocColor()
+                Log.d("SensorChanged", "color is: $locationColor")
+                updateRoute(Triple(newX, newY, locationColor))
                 Log.d("SensorChanged", "New Location: ($newX, $newY)")
             }
         } else {
@@ -227,10 +264,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    private fun getLocColor(): Int {
+        return when (getSignalStrength(signalStrengthFlow.value)) {
+            CustomSignalStrength.EXCELLENT -> RouteColor.GREEN.ordinal
+            CustomSignalStrength.GOOD -> RouteColor.YELLOW.ordinal
+            CustomSignalStrength.FAIR -> RouteColor.ORANGE.ordinal
+            CustomSignalStrength.POOR -> RouteColor.RED.ordinal
+            CustomSignalStrength.NONE -> RouteColor.BLACK.ordinal
+            else ->  RouteColor.BLACK.ordinal
+        }
+    }
+
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     // Helper function to update the route state
-    private fun updateRoute(newLocation: Pair<Float, Float>) {
+    private fun updateRoute(newLocation: Triple<Float, Float , Int>) {
         val routeList = routeState.value.toMutableList()
         routeList.add(newLocation)
         routeState.value = routeList
@@ -260,6 +308,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var viewMode by remember { mutableStateOf(false) }
         var showDeleteDialog by remember { mutableStateOf(false) }
         var mapToDelete by remember { mutableStateOf<MapEntity?>(null) }
+        val signalStrength by signalStrengthFlow.collectAsState()
+
 
         val launcher =
             rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -363,7 +413,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     userLocation = Pair(tapOffset.x, tapOffset.y)
                                     initialLocation = Pair(tapOffset.x, tapOffset.y)
                                     currentLocation = Pair(tapOffset.x, tapOffset.y)
-                                    routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
+                                    routeState.value = listOf(Triple(tapOffset.x, tapOffset.y, 6))
                                     Log.d(
                                         "MapScreen",
                                         "Initial Location: ($tapOffset.x, $tapOffset.y)"
@@ -377,7 +427,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         contentDescription = "Map",
                         modifier = Modifier.fillMaxSize()
                     )
-
+                    SignalStrengthBox(signalStrength)
                     DrawRoute(routeState.value)
 
                     currentLocation?.let { (x, y) ->
@@ -402,21 +452,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                             context.contentResolver.openInputStream(Uri.parse(map.uri))
                                         mapBitmap = BitmapFactory.decodeStream(inputStream)
                                         routeState.value =
-                                            emptyList() // Clear the route when a new map is selected
+                                            emptyList()
                                         currentLocation = null
                                     }
                                 }
-                                showGuide = true // Show the guide
+                                showGuide = true
                             },
                             onClickView = {
-                                // Load the selected map in view mode
                                 scope.launch {
                                     withContext(Dispatchers.IO) {
                                         val inputStream =
                                             context.contentResolver.openInputStream(Uri.parse(map.uri))
                                         mapBitmap = BitmapFactory.decodeStream(inputStream)
                                         routeState.value =
-                                            emptyList() // Clear the route when a new map is selected
+                                            emptyList()
                                         currentLocation = null
                                         viewMode = true
                                     }
@@ -441,9 +490,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     Icon(Icons.Default.Add, contentDescription = "Add Map")
                 }
             }
+
         }
 
-        // Show the guide dialog
         if (showGuide) {
             GuideDialog {
                 showGuide = false
@@ -453,77 +502,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
 
     @Composable
-    fun DrawRoute(route: List<Pair<Float, Float>>) {
+    fun DrawRoute(route: List<Triple<Float, Float, Int>>) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            route.forEach { (x, y) ->
+            route.forEach { (x, y, color) ->
                 drawCircle(
-                    color = Color.Red,
-                    radius = 7f,
+                    color = getColorByIndex(color),
+                    radius = 15f,
                     center = Offset(x, y),
                     style = androidx.compose.ui.graphics.drawscope.Fill
                 )
-                Log.d("DrawRoute", "Drawing circle at: ($x, $y)")
+                Log.d("DrawRoute", "Drawing circle at: ($x, $y) with color: $color")
             }
         }
     }
 
 
-    @Composable
-    fun MapListItem(map: MapEntity, onClickEdit: () -> Unit, onClickView: () -> Unit, onDelete: () -> Unit) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = map.name)
-            Row {
-                IconButton(onClick = { onClickEdit() }) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit Map")
-                }
-                IconButton(onClick = { onClickView() }) {
-                    Icon(Icons.Default.Info, contentDescription = "View Map")
-                }
-                IconButton(onClick = { onDelete() }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete Map")
-                }
-            }
-        }
-    }
-
-
-    @Composable
-    fun GuideDialog(onDismiss: () -> Unit) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("Guide") },
-            text = { Text("Hold your phone with the screen facing upward, parallel to the floor.") },
-            confirmButton = {
-                Button(onClick = onDismiss) {
-                    Text("OK")
-                }
-            }
-        )
-    }
-
-    @Composable
-    fun DeleteConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text("Confirm Deletion") },
-            text = { Text("Are you sure you want to delete this map?") },
-            confirmButton = {
-                Button(onClick = onConfirm) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                Button(onClick = onDismiss) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 
 }

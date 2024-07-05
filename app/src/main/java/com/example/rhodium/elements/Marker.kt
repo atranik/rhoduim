@@ -1,21 +1,13 @@
-package com.example.rhodium
+package com.example.rhodium.elements
 
-import android.graphics.BlurMaskFilter.Blur
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
+
 
 @Composable
 fun LocationMarker(x: Float, y: Float) {
@@ -45,10 +37,4 @@ fun LocationMarker(x: Float, y: Float) {
             center = Offset(x, y)
         )
     }
-}
-
-
-@Composable
-fun pxToDp(px: Float): Dp {
-    return with(LocalDensity.current) { px.toDp() }
 }

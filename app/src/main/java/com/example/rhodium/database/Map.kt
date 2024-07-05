@@ -1,4 +1,4 @@
-package com.example.rhodium
+package com.example.rhodium.database
 
 import androidx.room.ColumnInfo
 import androidx.room.Dao
@@ -27,3 +27,4 @@ interface MapDao {
     @Delete
     fun delete(map: MapEntity)
 }
+
