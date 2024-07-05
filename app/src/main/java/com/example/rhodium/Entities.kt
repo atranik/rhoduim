@@ -2,6 +2,7 @@ package com.example.rhodium
 
 import androidx.room.ColumnInfo
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Entity
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -22,4 +23,7 @@ interface MapDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(map: MapEntity)
+
+    @Delete
+    fun delete(map: MapEntity)
 }

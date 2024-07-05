@@ -46,6 +46,8 @@ import kotlinx.coroutines.withContext
 import kotlin.math.absoluteValue
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.filled.Delete
+
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -242,6 +244,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var showDialog by remember { mutableStateOf(false) }
         var newMapUri by remember { mutableStateOf<Uri?>(null) }
         var newMapName by remember { mutableStateOf("") }
+        var showGuide by remember { mutableStateOf(false) } // State for showing the guide
+
+        var showDeleteDialog by remember { mutableStateOf(false) }
+        var mapToDelete by remember { mutableStateOf<MapEntity?>(null) }
 
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -294,6 +300,27 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             )
         }
 
+        if (showDeleteDialog) {
+            DeleteConfirmationDialog(
+                onConfirm = {
+                    mapToDelete?.let { map ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                database.mapDao().delete(map)
+                                availableMaps = database.mapDao().getAll() // Refresh the list
+                            }
+                            showDeleteDialog = false
+                            mapToDelete = null
+                        }
+                    }
+                },
+                onDismiss = {
+                    showDeleteDialog = false
+                    mapToDelete = null
+                }
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -327,39 +354,42 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
                     DrawRoute(routeState.value)
 
-//                    userLocation?.let { (x, y) ->
-//                        Box(
-//                            modifier = Modifier
-//                                .offset(x.dp, y.dp)
-//                                .size(4.dp)
-//                        ) {
-//                            LocationMarker() // Display the location marker
-//                        }
-//                    }
                     currentLocation?.let { (x, y) ->
                         LocationMarker(x ,y) // Display the current location marker
                         Log.d("MapScreen", "Current Location: ($x, $y)")
                     }
                 }
             } else {
+                Text(
+                    text = "Rhodium",
+                    style = MaterialTheme.typography.headlineLarge,
+                    modifier = Modifier.padding(16.dp)
+                )
                 Text("Select a map from the inventory", modifier = Modifier.padding(16.dp))
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     items(availableMaps) { map ->
-                        MapListItem(map) {
-                            // Load the selected map
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
-                                    mapBitmap = BitmapFactory.decodeStream(inputStream)
-                                    routeState.value = emptyList() // Clear the route when a new map is selected
-                                    currentLocation = null
+                        MapListItem(
+                            map = map,
+                            onClick = {
+                                // Load the selected map
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
+                                        mapBitmap = BitmapFactory.decodeStream(inputStream)
+                                        routeState.value = emptyList() // Clear the route when a new map is selected
+                                        currentLocation = null
+                                    }
                                 }
+                                showGuide = true // Show the guide
+                            },
+                            onDelete = {
+                                mapToDelete = map
+                                showDeleteDialog = true
                             }
-                            showGuide = true
-                        }
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -375,12 +405,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             }
         }
 
+        // Show the guide dialog
         if (showGuide) {
             GuideDialog {
                 showGuide = false
             }
         }
     }
+
 
     @Composable
     fun DrawRoute(route: List<Pair<Float, Float>>) {
@@ -399,17 +431,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
 
 
-    @Composable
-    fun MapListItem(map: MapEntity, onClick: () -> Unit) {
-        Text(
-            text = map.name,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-                .clickable { onClick() }
-        )
+@Composable
+fun MapListItem(map: MapEntity, onClick: () -> Unit, onDelete: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .clickable { onClick() },
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = map.name)
+        IconButton(onClick = { onDelete() }) {
+            Icon(Icons.Default.Delete, contentDescription = "Delete Map")
+        }
     }
 }
+
+
 
 @Composable
 fun GuideDialog(onDismiss: () -> Unit) {
@@ -423,4 +462,25 @@ fun GuideDialog(onDismiss: () -> Unit) {
             }
         }
     )
+}
+
+    @Composable
+    fun DeleteConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Confirm Deletion") },
+            text = { Text("Are you sure you want to delete this map?") },
+            confirmButton = {
+                Button(onClick = onConfirm) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                Button(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
 }
