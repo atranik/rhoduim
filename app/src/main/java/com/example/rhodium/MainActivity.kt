@@ -47,6 +47,8 @@ import kotlin.math.absoluteValue
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 
 
 
@@ -62,7 +64,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var initialLocation: Pair<Float, Float>? = null
     private var currentLocation: Pair<Float, Float>? = null
     private var showGuide by mutableStateOf(false)
-
 
 
     // MutableState to hold the route
@@ -136,11 +137,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 accelValues = event.values.clone()
-                Log.d("SensorChanged", "Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})")
+                Log.d(
+                    "SensorChanged",
+                    "Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})"
+                )
             }
+
             Sensor.TYPE_MAGNETIC_FIELD -> {
                 magnetValues = event.values.clone()
-                Log.d("SensorChanged", "Magnetometer: (${magnetValues[0]}, ${magnetValues[1]}, ${magnetValues[2]})")
+                Log.d(
+                    "SensorChanged",
+                    "Magnetometer: (${magnetValues[0]}, ${magnetValues[1]}, ${magnetValues[2]})"
+                )
             }
         }
 
@@ -172,7 +180,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         smoothedAccelValues[1] = alpha * smoothedAccelValues[1] + (1 - alpha) * accelValues[1]
 
         // Calculate the magnitude of the smoothed accelerometer vector for x and y only
-        val accelMagnitude = sqrt(smoothedAccelValues[0] * smoothedAccelValues[0] + smoothedAccelValues[1] * smoothedAccelValues[1])
+        val accelMagnitude =
+            sqrt(smoothedAccelValues[0] * smoothedAccelValues[0] + smoothedAccelValues[1] * smoothedAccelValues[1])
         Log.d("SensorChanged", "Smoothed Accelerometer Magnitude: $accelMagnitude")
 
         // Check if the user is walking
@@ -183,14 +192,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     velocityX = deltaMove
                     velocityY = 0f
                 }
+
                 "South" -> {
                     velocityX = 0f
                     velocityY = deltaMove
                 }
+
                 "North" -> {
                     velocityX = 0f
                     velocityY = -deltaMove
                 }
+
                 "West" -> {
                     velocityX = -deltaMove
                     velocityY = 0f
@@ -249,16 +261,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var showDeleteDialog by remember { mutableStateOf(false) }
         var mapToDelete by remember { mutableStateOf<MapEntity?>(null) }
 
-        val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                val data: Intent? = result.data
-                val uri = data?.data
-                if (uri != null) {
-                    newMapUri = uri
-                    showDialog = true
+        val launcher =
+            rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode == RESULT_OK) {
+                    val data: Intent? = result.data
+                    val uri = data?.data
+                    if (uri != null) {
+                        newMapUri = uri
+                        showDialog = true
+                    }
                 }
             }
-        }
 
         if (showDialog) {
             AlertDialog(
@@ -280,11 +293,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             scope.launch {
                                 withContext(Dispatchers.IO) {
                                     // Save map to the database with the user-provided name
-                                    database.mapDao().insert(MapEntity(name = newMapName, uri = uri.toString()))
+                                    database.mapDao()
+                                        .insert(MapEntity(name = newMapName, uri = uri.toString()))
                                 }
                                 saveMapUri(uri.toString(), context)
                                 // Update availableMaps to include the newly added map
-                                availableMaps = withContext(Dispatchers.IO) { database.mapDao().getAll() }
+                                availableMaps =
+                                    withContext(Dispatchers.IO) { database.mapDao().getAll() }
                             }
                             showDialog = false
                         }
@@ -328,6 +343,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
+            Text(
+                text = "Rhodium",
+                style = MaterialTheme.typography.headlineLarge,
+                modifier = Modifier.padding(16.dp)
+            )
             if (mapBitmap != null) {
                 BackHandler {
                     mapBitmap = null
@@ -355,16 +375,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     DrawRoute(routeState.value)
 
                     currentLocation?.let { (x, y) ->
-                        LocationMarker(x ,y) // Display the current location marker
+                        LocationMarker(x, y) // Display the current location marker
                         Log.d("MapScreen", "Current Location: ($x, $y)")
                     }
                 }
             } else {
-                Text(
-                    text = "Rhodium",
-                    style = MaterialTheme.typography.headlineLarge,
-                    modifier = Modifier.padding(16.dp)
-                )
                 Text("Select a map from the inventory", modifier = Modifier.padding(16.dp))
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
@@ -373,17 +388,32 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     items(availableMaps) { map ->
                         MapListItem(
                             map = map,
-                            onClick = {
-                                // Load the selected map
+                            onClickEdit = {
+                                // Load the selected map in edit mode
                                 scope.launch {
                                     withContext(Dispatchers.IO) {
-                                        val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
+                                        val inputStream =
+                                            context.contentResolver.openInputStream(Uri.parse(map.uri))
                                         mapBitmap = BitmapFactory.decodeStream(inputStream)
-                                        routeState.value = emptyList() // Clear the route when a new map is selected
+                                        routeState.value =
+                                            emptyList() // Clear the route when a new map is selected
                                         currentLocation = null
                                     }
                                 }
                                 showGuide = true // Show the guide
+                            },
+                            onClickView = {
+                                // Load the selected map in view mode
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val inputStream =
+                                            context.contentResolver.openInputStream(Uri.parse(map.uri))
+                                        mapBitmap = BitmapFactory.decodeStream(inputStream)
+                                        routeState.value =
+                                            emptyList() // Clear the route when a new map is selected
+                                        currentLocation = null
+                                    }
+                                }
                             },
                             onDelete = {
                                 mapToDelete = map
@@ -395,7 +425,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 Spacer(modifier = Modifier.height(16.dp))
                 FloatingActionButton(
                     onClick = {
-                        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                        val intent =
+                            Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
                         launcher.launch(intent)
                     },
                     modifier = Modifier.align(Alignment.CenterHorizontally)
@@ -430,39 +461,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
 
-
-@Composable
-fun MapListItem(map: MapEntity, onClick: () -> Unit, onDelete: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp)
-            .clickable { onClick() },
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(text = map.name)
-        IconButton(onClick = { onDelete() }) {
-            Icon(Icons.Default.Delete, contentDescription = "Delete Map")
-        }
-    }
-}
-
-
-
-@Composable
-fun GuideDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Guide") },
-        text = { Text("Hold your phone with the screen facing upward, parallel to the floor.") },
-        confirmButton = {
-            Button(onClick = onDismiss) {
-                Text("OK")
+    @Composable
+    fun MapListItem(map: MapEntity, onClickEdit: () -> Unit, onClickView: () -> Unit, onDelete: () -> Unit) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = map.name)
+            Row {
+                IconButton(onClick = { onClickEdit() }) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit Map")
+                }
+                IconButton(onClick = { onClickView() }) {
+                    Icon(Icons.Default.Info, contentDescription = "View Map")
+                }
+                IconButton(onClick = { onDelete() }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete Map")
+                }
             }
         }
-    )
-}
+    }
+
+
+    @Composable
+    fun GuideDialog(onDismiss: () -> Unit) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Guide") },
+            text = { Text("Hold your phone with the screen facing upward, parallel to the floor.") },
+            confirmButton = {
+                Button(onClick = onDismiss) {
+                    Text("OK")
+                }
+            }
+        )
+    }
 
     @Composable
     fun DeleteConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
