@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -47,7 +46,6 @@ import kotlinx.coroutines.withContext
 import kotlin.math.absoluteValue
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
-import androidx.compose.ui.platform.LocalDensity
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -56,22 +54,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var gyroscope: Sensor? = null
     private var magnetometer: Sensor? = null
 
-    private var rotationMatrix = FloatArray(9)
-    private var orientationAngles = FloatArray(3)
-    private var lastGyroValues = FloatArray(3)
-    private var lastGyroTimestamp = 0L
-    private val gyroBias = FloatArray(3)
-
 
     private lateinit var database: AppDatabase
 
     private var initialLocation: Pair<Float, Float>? = null
     private var currentLocation: Pair<Float, Float>? = null
-    private var previousTime: Long = System.currentTimeMillis()
-    private val smoothedAccelValues = floatArrayOf(0f, 0f, 0f)
-    private var velocityX = 0f
-    private var velocityY = 0f
-    private var accelValues = floatArrayOf(0f, 0f, 0f)
     private var showGuide by mutableStateOf(false)
 
 
@@ -127,10 +114,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager.unregisterListener(this)
     }
 
+    private var accelValues = FloatArray(3)
+    private var magnetValues = FloatArray(3)
+    private var smoothedAccelValues = FloatArray(3)
+    private var velocityX = 0f
+    private var velocityY = 0f
 
-    private val walkingThreshold = 0.9f // Threshold to detect walking
-    private val deltaMove = 1.3f // Constant delta value for movement
-    private val horizontalThreshold = 9.9f // Threshold to detect if the phone is horizontal
+    private val rotationMatrix = FloatArray(9)
+    private val orientationAngles = FloatArray(3)
+
+
+    private val walkingThreshold = 0.94f // Threshold to detect walking
+    private val deltaMove = 1.5f // Constant delta value for movement
+    private val horizontalThreshold = 9.84f // Threshold to detect if the phone is horizontal
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || initialLocation == null) return
@@ -140,12 +136,33 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 accelValues = event.values.clone()
                 Log.d("SensorChanged", "Accelerometer: (${accelValues[0]}, ${accelValues[1]}, ${accelValues[2]})")
             }
+            Sensor.TYPE_MAGNETIC_FIELD -> {
+                magnetValues = event.values.clone()
+                Log.d("SensorChanged", "Magnetometer: (${magnetValues[0]}, ${magnetValues[1]}, ${magnetValues[2]})")
+            }
         }
+
         // Check if the phone is held horizontally (z-axis should be close to 9.8 or -9.8 for horizontal)
         if (accelValues[2] < horizontalThreshold && accelValues[2] > -horizontalThreshold) {
             Log.d("SensorChanged", "Phone is not horizontal. Ignoring movement.")
             return
         }
+
+        // Calculate rotation matrix and orientation angles
+        SensorManager.getRotationMatrix(rotationMatrix, null, accelValues, magnetValues)
+        SensorManager.getOrientation(rotationMatrix, orientationAngles)
+        val azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
+        Log.d("SensorChanged", "Azimuth: $azimuth")
+
+        // Determine direction based on azimuth
+        val direction = when {
+            azimuth in -45.0..45.0 -> "East"
+            azimuth in 45.0..135.0 -> "South"
+            azimuth < -45.0 && azimuth >= -135.0 -> "North"
+            azimuth > 135.0 || azimuth < -135.0 -> "West"
+            else -> "Unknown"
+        }
+        Log.d("SensorChanged", "Phone Direction: $direction")
 
         // Smooth the accelerometer data using a low-pass filter
         val alpha = 0.8f
@@ -158,15 +175,24 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         // Check if the user is walking
         if (accelMagnitude > walkingThreshold) {
-            // Update velocities based on the direction
-            if (smoothedAccelValues[0].absoluteValue > smoothedAccelValues[1].absoluteValue) {
-                // Moving more in the x direction
-                velocityX = deltaMove * Math.signum(smoothedAccelValues[0])
-                velocityY = 0f
-            } else {
-                // Moving more in the y direction
-                velocityX = 0f
-                velocityY = deltaMove * Math.signum(smoothedAccelValues[1])
+            // Update velocities based on azimuth (direction)
+            when (direction) {
+                "East" -> {
+                    velocityX = deltaMove
+                    velocityY = 0f
+                }
+                "South" -> {
+                    velocityX = 0f
+                    velocityY = deltaMove
+                }
+                "North" -> {
+                    velocityX = 0f
+                    velocityY = -deltaMove
+                }
+                "West" -> {
+                    velocityX = -deltaMove
+                    velocityY = 0f
+                }
             }
             Log.d("SensorChanged", "User is walking. Updated Velocities: ($velocityX, $velocityY)")
 
@@ -186,7 +212,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             Log.d("SensorChanged", "User is not walking. Velocities set to zero.")
         }
     }
-
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
