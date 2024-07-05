@@ -3,14 +3,12 @@ package com.example.rhodium
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -41,39 +39,26 @@ import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.room.Room
 import com.example.rhodium.ui.theme.RhodiumTheme
+import com.google.android.gms.location.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.absoluteValue
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 import androidx.compose.foundation.Canvas
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
+import kotlin.math.cos
 
-
-class MainActivity : ComponentActivity(), SensorEventListener {
-    private lateinit var sensorManager: SensorManager
-    private var accelerometer: Sensor? = null
-    private var gyroscope: Sensor? = null
-    private var magnetometer: Sensor? = null
-
+class MainActivity : ComponentActivity() {
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
     private lateinit var database: AppDatabase
 
     private var initialLocation: Pair<Float, Float>? = null
+    private var initialLatLon: Pair<Double, Double>? = null
     private var currentLocation: Pair<Float, Float>? = null
-    private var previousTime: Long = System.currentTimeMillis()
-    private var velocityX = 0f
-    private var velocityY = 0f
-    private var accelValues = floatArrayOf(0f, 0f, 0f)
-    private var gyroValues = floatArrayOf(0f, 0f, 0f)
-    private var magnetValues = floatArrayOf(0f, 0f, 0f)
-
-    // Constants for filtering and movement detection
-    private val alpha = 0.9f // for low-pass filter
-    private val movementThreshold = 0.1f // Threshold to detect movement
-    private val updateInterval = 500 // Update interval in milliseconds
-    private val friction = 0.9f // Friction factor to gradually reduce velocity
-    private val deadZone = 0.2f // Dead zone to ignore small movements
-
-
 
     // MutableState to hold the route
     private val routeState = mutableStateOf<List<Pair<Float, Float>>>(emptyList())
@@ -82,14 +67,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.ACCESS_FINE_LOCATION),
             1
         )
 
-        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-        magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         database = Room.databaseBuilder(
             applicationContext,
@@ -108,103 +90,89 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        accelerometer?.also { acc ->
-            sensorManager.registerListener(this, acc, SensorManager.SENSOR_DELAY_NORMAL)
+    @SuppressLint("MissingPermission")
+    private fun startLocationUpdates() {
+        val locationRequest = LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY, 1000L
+        ).apply {
+            setWaitForAccurateLocation(false)
+            setMinUpdateIntervalMillis(500L)
+            setMaxUpdateDelayMillis(1000L)
+        }.build()
+
+        val locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                locationResult.lastLocation?.let {
+                    Log.d("LocationUpdate", "Received new location: ${it.latitude}, ${it.longitude}")
+                    updateLocation(Pair(it.latitude, it.longitude))
+                }
+            }
         }
-        gyroscope?.also { gyro ->
-            sensorManager.registerListener(this, gyro, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-        magnetometer?.also { mag ->
-            sensorManager.registerListener(this, mag, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-    }
 
-    override fun onPause() {
-        super.onPause()
-        sensorManager.unregisterListener(this)
-    }
-
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || initialLocation == null) return
-
-        val currentTime = System.currentTimeMillis()
-        val deltaTime = (currentTime - previousTime) / 1000f // in seconds
-
-        if (deltaTime < updateInterval / 1000f) {
-            // Debounce updates to avoid too frequent updates
+        if (ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            // Request permissions if not granted
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1)
             return
         }
 
-        previousTime = currentTime
+        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
 
-        when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> {
-                // Apply high-pass filter to accelerometer data to remove gravity, but ignore z-axis
-                accelValues[0] = alpha * accelValues[0] + (1 - alpha) * event.values[0]
-                accelValues[1] = alpha * accelValues[1] + (1 - alpha) * event.values[1]
-                Log.d("SensorChanged", "Filtered Accelerometer: (${accelValues[0]}, ${accelValues[1]})")
-            }
-            Sensor.TYPE_GYROSCOPE -> {
-                gyroValues[0] = event.values[0]
-                gyroValues[1] = event.values[1]
-                Log.d("SensorChanged", "Gyroscope: (${gyroValues[0]}, ${gyroValues[1]})")
-            }
-            Sensor.TYPE_MAGNETIC_FIELD -> {
-                magnetValues[0] = event.values[0]
-                magnetValues[1] = event.values[1]
-                magnetValues[2] = event.values[2]
-                Log.d("SensorChanged", "Magnetometer: (${magnetValues[0]}, ${magnetValues[1]}, ${magnetValues[2]})")
-            }
-        }
-
-        // Calculate the magnitude of the accelerometer vector for x and y only
-        val accelMagnitude = sqrt(accelValues[0] * accelValues[0] + accelValues[1] * accelValues[1])
-        Log.d("SensorChanged", "Accelerometer Magnitude: $accelMagnitude")
-
-        // Ignore small movements by applying a dead zone
-        if (accelMagnitude < deadZone) {
-            velocityX *= friction
-            velocityY *= friction
-            Log.d("SensorChanged", "In Dead Zone, Applying Friction: ($velocityX, $velocityY)")
-        } else {
-            // Update velocities
-            velocityX += accelValues[0] * deltaTime
-            velocityY += accelValues[1] * deltaTime
-            Log.d("SensorChanged", "Updated Velocities: ($velocityX, $velocityY)")
-        }
-
-        // Apply friction to velocities
-        velocityX *= friction
-        velocityY *= friction
-
-        // Apply a stop threshold to velocities
-        val stopThreshold = 0.09f
-        if (velocityX.absoluteValue < stopThreshold) velocityX = 0f
-        if (velocityY.absoluteValue < stopThreshold) velocityY = 0f
-
-        Log.d("SensorChanged", "Velocities after Stop Threshold: ($velocityX, $velocityY)")
-
-        // Update the current location based on the velocities if movement exceeds the threshold
-        currentLocation?.let { (x, y) ->
-            val deltaX = velocityX * deltaTime
-            val deltaY = velocityY * deltaTime
-
-            if (deltaX.absoluteValue > movementThreshold || deltaY.absoluteValue > movementThreshold) {
-                val newX = x + deltaX
-                val newY = y + deltaY
-                currentLocation = Pair(newX, newY)
-                // Update the route state to add the new location
-                updateRoute(Pair(newX, newY))
-                Log.d("SensorChanged", "New Location: ($newX, $newY)")
-            } else {
-                Log.d("SensorChanged", "Movement below threshold: (deltaX: $deltaX, deltaY: $deltaY)")
-            }
+    private fun updateLocation(newLocation: Pair<Double, Double>) {
+        currentLocation?.let {
+            val pixelCoordinates = convertToPixelCoordinates(newLocation)
+            currentLocation = pixelCoordinates
+            updateRoute(pixelCoordinates)
+            Log.d("LocationUpdate", "New Location in pixels: (${pixelCoordinates.first}, ${pixelCoordinates.second})")
         }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    private fun convertToPixelCoordinates(location: Pair<Double, Double>): Pair<Float, Float> {
+        val initialLat = initialLatLon?.first ?: return Pair(0f, 0f)
+        val initialLon = initialLatLon?.second ?: return Pair(0f, 0f)
+        val initialX = initialLocation?.first ?: return Pair(0f, 0f)
+        val initialY = initialLocation?.second ?: return Pair(0f, 0f)
+
+        // Differences in degrees
+        val latDiff = location.first - initialLat
+        val lonDiff = location.second - initialLon
+
+        // Use finer scaling factors for small indoor spaces and apply a smoothing factor
+        val scalingFactor = 1e6 // Fine-tune this factor based on your map's size and resolution
+        val x = initialX + (lonDiff * scalingFactor).toFloat()
+        val y = initialY - (latDiff * scalingFactor).toFloat() // Invert y because the origin is at the top-left
+
+        Log.d("CoordinateConversion", "Convert lat/lon: (${location.first}, ${location.second}) to pixels: ($x, $y)")
+        Log.d("CoordinateConversion", "Initial Lat/Lon: ($initialLat, $initialLon), Initial Pixels: ($initialX, $initialY)")
+        Log.d("CoordinateConversion", "Lat/Lon Diff: ($latDiff, $lonDiff), Scaling Factor: $scalingFactor")
+
+        return Pair(x, y)
+    }
+
+
+    @SuppressLint("MissingPermission")
+    private suspend fun getCurrentLatLon(): Pair<Double, Double>? = suspendCoroutine { cont ->
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            location?.let {
+                val latLon = Pair(it.latitude, it.longitude)
+                Log.d("InitialLocation", "Current location: ${it.latitude}, ${it.longitude}")
+                cont.resume(latLon)
+            } ?: run {
+                Log.e("InitialLocation", "Location is null")
+                cont.resume(null)
+            }
+        }.addOnFailureListener { e ->
+            Log.e("MainActivity", "Failed to get current location", e)
+            cont.resume(null)
+        }
+    }
 
     // Helper function to update the route state
     private fun updateRoute(newLocation: Pair<Float, Float>) {
@@ -301,96 +269,107 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
-                            detectTapGestures { tapOffset ->
-                                userLocation = Pair(tapOffset.x, tapOffset.y)
-                                initialLocation = Pair(tapOffset.x, tapOffset.y)
-                                currentLocation = Pair(tapOffset.x, tapOffset.y)
-                                routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
-                                Log.d("MapScreen", "Initial Location: ($tapOffset.x, $tapOffset.y)")
+                                detectTapGestures { tapOffset ->
+                                    userLocation = Pair(tapOffset.x, tapOffset.y)
+                                    initialLocation = Pair(tapOffset.x, tapOffset.y)
+                                    currentLocation = Pair(tapOffset.x, tapOffset.y)
+                                    // Launch a coroutine to get the current latitude and longitude
+                                    scope.launch {
+                                        initialLatLon = getCurrentLatLon()
+
+                                        if (initialLatLon == null) {
+                                            Log.e("MapScreen", "Failed to get initial GPS location")
+                                        } else {
+                                            Log.d("MapScreen", "Initial Lat/Lon: $initialLatLon")
+                                            routeState.value = listOf(Pair(tapOffset.x, tapOffset.y))
+                                            startLocationUpdates() // Start GPS updates after setting the initial location
+                                        }
+                                    }
+                                    Log.d("MapScreen", "Tapped Location: ($tapOffset.x, $tapOffset.y)")
+                                }
+                            }
+                            ) {
+                            Image(
+                                bitmap = mapBitmap!!.asImageBitmap(),
+                                contentDescription = "Map",
+                                modifier = Modifier.fillMaxSize()
+                            )
+
+                            DrawRoute(routeState.value)
+
+                            userLocation?.let { (x, y) ->
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x.dp, y.dp)
+                                        .size(10.dp)
+                                        .background(Color.Green) // Initial location pin
+                                )
+                            }
+                            currentLocation?.let { (x, y) ->
+                                Box(
+                                    modifier = Modifier
+                                        .offset(x.dp, y.dp)
+                                        .size(10.dp)
+                                        .background(Color.Red) // Current location pin
+                                )
                             }
                         }
-                ) {
-                    Image(
-                        bitmap = mapBitmap!!.asImageBitmap(),
-                        contentDescription = "Map",
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    DrawRoute(routeState.value)
-
-                    userLocation?.let { (x, y) ->
-                        Box(
-                            modifier = Modifier
-                                .offset(x.dp, y.dp)
-                                .size(10.dp)
-                                .background(Color.Green) // Initial location pin
-                        )
-                    }
-                    currentLocation?.let { (x, y) ->
-                        Box(
-                            modifier = Modifier
-                                .offset(x.dp, y.dp)
-                                .size(10.dp)
-                                .background(Color.Red) // Current location pin
-                        )
-                    }
-                }
-            } else {
-                Text("Select a map from the inventory", modifier = Modifier.padding(16.dp))
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    items(availableMaps) { map ->
-                        MapListItem(map) {
-                            // Load the selected map
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
-                                    mapBitmap = BitmapFactory.decodeStream(inputStream)
-                                    routeState.value = emptyList() // Clear the route when a new map is selected
+                        } else {
+                    Text("Select a map from the inventory", modifier = Modifier.padding(16.dp))
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        items(availableMaps) { map ->
+                            MapListItem(map) {
+                                // Load the selected map
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        val inputStream = context.contentResolver.openInputStream(Uri.parse(map.uri))
+                                        mapBitmap = BitmapFactory.decodeStream(inputStream)
+                                        routeState.value = emptyList() // Clear the route when a new map is selected
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(16.dp))
-                FloatingActionButton(
-                    onClick = {
-                        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
-                        launcher.launch(intent)
-                    },
-                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Map")
+                    Spacer(modifier = Modifier.height(16.dp))
+                    FloatingActionButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+                            launcher.launch(intent)
+                        },
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add Map")
+                    }
                 }
             }
         }
-    }
 
-    @Composable
-    fun DrawRoute(route: List<Pair<Float, Float>>) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            route.forEach { (x, y) ->
-                drawCircle(
-                    color = Color.Red,
-                    radius = 5f,
-                    center = Offset(x, y),
-                    style = Stroke(width = 2f)
-                )
-                Log.d("DrawRoute", "Drawing circle at: ($x, $y)")
+        @Composable
+        fun DrawRoute(route: List<Pair<Float, Float>>) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                route.forEach { (x, y) ->
+                    drawCircle(
+                        color = Color.Red,
+                        radius = 5f,
+                        center = Offset(x, y),
+                        style = Stroke(width = 3f)
+                    )
+                    Log.d("DrawRoute", "Drawing circle at: ($x, $y)")
+                }
             }
         }
-    }
 
-    @Composable
-    fun MapListItem(map: MapEntity, onClick: () -> Unit) {
-        Text(
-            text = map.name,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-                .clickable { onClick() }
-        )
+        @Composable
+        fun MapListItem(map: MapEntity, onClick: () -> Unit) {
+            Text(
+                text = map.name,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .clickable { onClick() }
+            )
+        }
     }
-}

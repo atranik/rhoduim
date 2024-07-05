@@ -14,6 +14,7 @@ accompanist = "0.24.5-alpha"
 viewModelCompose = "2.6.1"
 room = "2.4.3"
 datastore = "1.0.0"
+go-android = "21.0.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -38,6 +39,7 @@ room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "
 room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 datastore-core = { group = "androidx.datastore", name = "datastore-core", version.ref = "datastore" }
+google-android = { group = "com.google.android.gms", name = "play-services-location", version.ref = "go-android"}
 
 
 [plugins]
