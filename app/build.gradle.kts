@@ -74,4 +74,5 @@ dependencies {
     kapt(libs.room.compiler)
     implementation(libs.datastore.preferences)
     implementation(libs.datastore.core)
+    implementation(libs.google.gms)
 }

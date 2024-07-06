@@ -2,6 +2,7 @@ package com.example.rhodium
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -13,6 +14,10 @@ import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
+import android.telephony.CellInfoGsm
+import android.telephony.CellInfoLte
+import android.telephony.CellInfoWcdma
+import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -32,7 +37,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -63,6 +67,9 @@ import kotlinx.coroutines.launch
 import com.example.rhodium.services.RetrieveAndSaveCellInfo
 import com.example.rhodium.services.getColorByIndex
 import kotlinx.coroutines.flow.collectLatest
+import com.google.android.gms.location.*
+import android.location.Location
+import android.os.Looper
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -71,13 +78,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var gyroscope: Sensor? = null
     private var magnetometer: Sensor? = null
     private val signalStrengthFlow = MutableStateFlow(0)
-
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     private lateinit var database: AppDatabase
 
     private var initialLocation: Pair<Float, Float>? = null
     private var currentLocation: Pair<Float, Float>? = null
+    private var currentsignal: Int? = null
     private var showGuide by mutableStateOf(false)
+    private lateinit var locationCallback: LocationCallback
+    private var locationState: MutableState<Location?> = mutableStateOf(null)
+
+    private val locationRequest = LocationRequest.create().apply {
+        interval = 700
+        fastestInterval = 700
+        priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+    }
 
 
     // MutableState to hold the route
@@ -98,6 +114,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             1
         )
 
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
@@ -107,6 +124,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             applicationContext,
             AppDatabase::class.java, "maps-database"
         ).build()
+
+        locationCallback = object : LocationCallback() {
+            override fun onLocationResult(locationResult: LocationResult) {
+                locationResult ?: return
+                val location = locationResult.lastLocation
+                locationState.value = location
+                getCellInfo()
+            }
+        }
+
+
+        startLocationUpdates()
 
         setContent {
             RhodiumTheme {
@@ -118,6 +147,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
         }
+
 
         lifecycleScope.launch {
             RetrieveAndSaveCellInfo(this@MainActivity, database).collect { signalStrength ->
@@ -151,16 +181,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var velocityX = 0f
     private var velocityY = 0f
     private var previousTime: Long = System.currentTimeMillis()
-    private val updateInterval = 200 // Update interval in milliseconds
+    private val updateInterval = 20 // Update interval in milliseconds
 
 
     private val rotationMatrix = FloatArray(9)
     private val orientationAngles = FloatArray(3)
 
-
-    private val walkingThreshold = 0.94f // Threshold to detect walking
+    private val walkingThreshold = 0.8f // Threshold to detect walking
     private val deltaMove = 1.5f // Constant delta value for movement
     private val horizontalThreshold = 9.84f // Threshold to detect if the phone is horizontal
+
+    @SuppressLint("MissingPermission")
+    private fun startLocationUpdates() {
+        fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
+    }
 
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || initialLocation == null) return
@@ -172,6 +206,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             // Debounce updates to avoid too frequent updates
             return
         }
+        previousTime = currentTime
 
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
@@ -197,7 +232,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             return
         }
 
-        // Calculate rotation matrix and orientation angles
         SensorManager.getRotationMatrix(rotationMatrix, null, accelValues, magnetValues)
         SensorManager.getOrientation(rotationMatrix, orientationAngles)
         val azimuth = Math.toDegrees(orientationAngles[0].toDouble()).toFloat()
@@ -220,7 +254,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
         val accelMagnitude =
             sqrt(smoothedAccelValues[0] * smoothedAccelValues[0] + smoothedAccelValues[1] * smoothedAccelValues[1])
-        Log.d("SensorChanged", "Smoothed Accelerometer Magnitude: $accelMagnitude")
 
         if (accelMagnitude > walkingThreshold) {
             when (direction) {
@@ -244,17 +277,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     velocityY = 0f
                 }
             }
-            Log.d("SensorChanged", "User is walking. Updated Velocities: ($velocityX, $velocityY)")
 
             // Update the current location based on the velocities
             currentLocation?.let { (x, y) ->
                 val newX = x + velocityX
                 val newY = y + velocityY
                 currentLocation = Pair(newX, newY)
-                val locationColor = getLocColor()
-                Log.d("SensorChanged", "color is: $locationColor")
+                val locationColor = getLocColor(currentsignal ?: 0)
+
                 updateRoute(Triple(newX, newY, locationColor))
-                Log.d("SensorChanged", "New Location: ($newX, $newY)")
+//                Log.d("SensorChanged", "New Location: ($newX, $newY)")
             }
         } else {
             // User is not walking, stop movement
@@ -264,8 +296,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
-    private fun getLocColor(): Int {
-        return when (getSignalStrength(signalStrengthFlow.value)) {
+    private fun getLocColor(signal: Int): Int {
+        return when (getSignalStrength(signal)) {
             CustomSignalStrength.EXCELLENT -> RouteColor.GREEN.ordinal
             CustomSignalStrength.GOOD -> RouteColor.YELLOW.ordinal
             CustomSignalStrength.FAIR -> RouteColor.ORANGE.ordinal
@@ -277,7 +309,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    // Helper function to update the route state
     private fun updateRoute(newLocation: Triple<Float, Float , Int>) {
         val routeList = routeState.value.toMutableList()
         routeList.add(newLocation)
@@ -304,11 +335,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         var showDialog by remember { mutableStateOf(false) }
         var newMapUri by remember { mutableStateOf<Uri?>(null) }
         var newMapName by remember { mutableStateOf("") }
-        var showGuide by remember { mutableStateOf(false) } // State for showing the guide
+        var showGuide by remember { mutableStateOf(false) }
         var viewMode by remember { mutableStateOf(false) }
         var showDeleteDialog by remember { mutableStateOf(false) }
         var mapToDelete by remember { mutableStateOf<MapEntity?>(null) }
-        val signalStrength by signalStrengthFlow.collectAsState()
 
 
         val launcher =
@@ -427,7 +457,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         contentDescription = "Map",
                         modifier = Modifier.fillMaxSize()
                     )
-                    SignalStrengthBox(signalStrength)
+                    SignalStrengthBox(currentsignal ?: 0)
                     DrawRoute(routeState.value)
 
                     currentLocation?.let { (x, y) ->
@@ -507,15 +537,39 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             route.forEach { (x, y, color) ->
                 drawCircle(
                     color = getColorByIndex(color),
-                    radius = 15f,
+                    radius = 14f,
                     center = Offset(x, y),
                     style = androidx.compose.ui.graphics.drawscope.Fill
                 )
-                Log.d("DrawRoute", "Drawing circle at: ($x, $y) with color: $color")
             }
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun getCellInfo() {
+        val telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
+        val cellInfoList = telephonyManager.allCellInfo
 
+        cellInfoList?.forEach { cellInfo ->
+            when (cellInfo) {
+                is CellInfoLte -> {
+                    val cellSignalStrength = cellInfo.cellSignalStrength
+                    currentsignal = cellSignalStrength.dbm
 
+                }
+
+                is CellInfoWcdma -> {
+                    val cellSignalStrength = cellInfo.cellSignalStrength
+                    currentsignal = cellSignalStrength.dbm
+
+                }
+
+                is CellInfoGsm -> {
+                    val cellSignalStrength = cellInfo.cellSignalStrength
+                    currentsignal = cellSignalStrength.dbm
+                }
+            }
+        }
+
+    }
 }

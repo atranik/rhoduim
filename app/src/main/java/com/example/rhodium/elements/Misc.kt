@@ -52,9 +52,9 @@ fun SignalStrengthBox(signalStrength: Int) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
-            .padding(12.dp)
+            .padding(16.dp)
             .background(Color.Black.copy(alpha = 0.5f))
-            .padding(12.dp)
+            .padding(18.dp)
     ) {
         Text(
             text = "Signal Strength: $signalStrength",

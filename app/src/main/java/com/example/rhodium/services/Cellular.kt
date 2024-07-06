@@ -89,7 +89,7 @@ public fun RetrieveAndSaveCellInfo(context: Context, database: AppDatabase): Flo
                 }
             }
         }
-        delay(300) // Delay for 100 millisecond before next read
+        delay(2000) // Delay for 2 second before next read
     }
 }
 
