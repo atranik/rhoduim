@@ -61,15 +61,14 @@ import com.example.rhodium.elements.MapListItem
 import com.example.rhodium.elements.SignalStrengthBox
 import com.example.rhodium.elements.saveMapUri
 import com.example.rhodium.services.RouteColor
+import com.example.rhodium.database.loadRouteStates
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 import com.example.rhodium.services.RetrieveAndSaveCellInfo
 import com.example.rhodium.services.getColorByIndex
-import kotlinx.coroutines.flow.collectLatest
 import com.google.android.gms.location.*
 import android.location.Location
 import android.os.Looper
+import com.example.rhodium.database.saveRouteStates
 
 
 class MainActivity : ComponentActivity(), SensorEventListener {
@@ -286,7 +285,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 val locationColor = getLocColor(currentsignal ?: 0)
 
                 updateRoute(Triple(newX, newY, locationColor))
-//                Log.d("SensorChanged", "New Location: ($newX, $newY)")
             }
         } else {
             // User is not walking, stop movement
@@ -430,6 +428,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             )
             if (mapBitmap != null) {
                 BackHandler {
+                    selectedMap?.let { map ->
+                        // Save route state before going back
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                saveRouteStates(database, map, routeState.value)
+                            }
+                        }
+                    }
                     mapBitmap = null
                     viewMode = false
                 }
@@ -480,9 +486,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                                     withContext(Dispatchers.IO) {
                                         val inputStream =
                                             context.contentResolver.openInputStream(Uri.parse(map.uri))
+                                        selectedMap = map.name
                                         mapBitmap = BitmapFactory.decodeStream(inputStream)
-                                        routeState.value =
-                                            emptyList()
+                                        routeState.value = loadRouteStates(database, map.name)
                                         currentLocation = null
                                     }
                                 }

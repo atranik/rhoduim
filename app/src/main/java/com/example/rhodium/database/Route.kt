@@ -1,7 +1,5 @@
 package com.example.rhodium.database
 
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Insert
@@ -31,18 +29,18 @@ interface RouteStateDao {
     fun deleteRouteStatesForMap(mapName: String)
 }
 
-fun saveRouteStates(database: AppDatabase, mapName: String, routeState: List<Triple<Float, Float, Color>>) {
+fun saveRouteStates(database: AppDatabase, mapName: String, routeState: List<Triple<Float, Float, Int>>) {
     val routeStateDao = database.routeStateDao()
     routeStateDao.deleteRouteStatesForMap(mapName) // Clear existing points for the map
     routeState.forEach { (x, y, color) ->
-        routeStateDao.insert(RouteStateEntity(mapName = mapName, x = x, y = y, color = color.toArgb()))
+        routeStateDao.insert(RouteStateEntity(mapName = mapName, x = x, y = y, color = color))
     }
 }
 
-fun loadRouteStates(database: AppDatabase, mapName: String): List<Triple<Float, Float, Color>> {
+fun loadRouteStates(database: AppDatabase, mapName: String): List<Triple<Float, Float, Int>> {
     val routeStateDao = database.routeStateDao()
     return routeStateDao.getRouteStatesForMap(mapName).map { entity ->
-        Triple(entity.x, entity.y, Color(entity.color))
+        Triple(entity.x, entity.y, entity.color)
     }
 }
 
